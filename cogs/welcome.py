@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID"))
 SUPPORT_CHANNEL_ID = int(os.getenv("SUPPORT_CHANNEL_ID"))
+ROLE_ID = int(os.getenv("ROLE_ID"))
 
 # TEMPORARY in-memory storage
 welcome_messages = {}
@@ -18,10 +19,16 @@ class Welcome(commands.Cog):
     async def on_member_join(self, member):
         channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
         support_channel = member.guild.get_channel(SUPPORT_CHANNEL_ID)
+        role = member.guild.get_role(ROLE_ID)
+
 
         panda_emoji = "<a:PandaKissesLove:1269770132129841155>"
         lyzz_emoji = "<:ACozyBlanketLyzz:1237365594219610224>"
         myra_emoji = "<:MyraKissHeart:1241845943943299153>"
+
+        if role:
+            await member.add_roles(role)
+            print(f"Gave {member.name} the role {role.name}")
 
         if channel and support_channel:
             msg = await channel.send(
