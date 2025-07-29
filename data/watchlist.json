@@ -1,24 +1,7 @@
 {
-    "One Piece": {
-        "current_episode": 1000,
-        "next_session": "2025-07-25T21:00:00"
-    },
-    "Squid Games": {
-        "current_episode": 3,
-        "next_session": "2025-07-26T13:00:00+00:00"
-    },
-    "Test": {
-        "current_episode": 4,
-        "next_session": null
-    },
-    "Jujutsu Kaisen": {
+    "The Walking Dead": {
         "current_season": 1,
         "current_episode": 1,
-        "next_session": "2025-07-27T15:00:00"
-    },
-    "The Rookie": {
-        "current_season": 2,
-        "current_episode": 1,
-        "next_session": "2025-07-27T14:00:00"
+        "next_session": null
     }
 }

@@ -94,6 +94,7 @@ class WatchParty(commands.Cog):
 
     # /removeshow
     @app_commands.command(name="removeshow", description="Remove a show from the watchlist.")
+    @app_commands.describe(title="Select a show")
     async def remove_show(self, interaction: discord.Interaction, title: str):
         title = title.strip().title()
         if title not in self.watchlist:
@@ -102,6 +103,10 @@ class WatchParty(commands.Cog):
         del self.watchlist[title]
         self.save_watchlist()
         await interaction.response.send_message(f"🗑️ '{title}' has been removed from the watchlist.")
+
+    @remove_show.autocomplete("title")
+    async def remove_show_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self.watchlist_autocomplete(interaction, current)
     
     # /setep
     @app_commands.command(name="setep",description="Update the current episode number for a show.")
