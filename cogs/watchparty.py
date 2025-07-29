@@ -137,6 +137,10 @@ class WatchParty(commands.Cog):
         self.watchlist[title]["next_session"] = None  # clears schedule session if any exist
         self.save_watchlist()
 
+    @watched.autocomplete("title")
+    async def watched_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self.watchlist_autocomplete(interaction, current)
+
     # /watchlist
     @app_commands.command(name="watchlist", description="View the current server watchlist.")
     async def show_watchlist(self, interaction: discord.Interaction):
