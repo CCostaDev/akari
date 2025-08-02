@@ -1,7 +1,13 @@
 {
     "The Walking Dead": {
         "current_season": 1,
+        "current_episode": 3,
+        "next_session": "2025-07-30T19:00:00"
+    },
+    "Kpop Demon Hunters": {
+        "type": "movie",
+        "current_season": 1,
         "current_episode": 1,
-        "next_session": null
+        "next_session": "2025-08-02T21:00:00"
     }
 }

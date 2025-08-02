@@ -78,19 +78,21 @@ class WatchParty(commands.Cog):
                     raise ValueError(f"Failed to fetch image: {url}")
             
     # /addshow
-    @app_commands.command(name="addshow", description="Add a new show to the server's watchlist.")
-    async def add_show(self, interaction: discord.Interaction, title: str):
+    @app_commands.command(name="addshow", description="Add a new show or movie to the server's watchlist.")
+    @app_commands.describe(title="Title of the show or movie", is_movie="Check if it's a movie instead of a TV show")
+    async def add_show(self, interaction: discord.Interaction, title: str, is_movie: bool = False):
         title = title.strip().title()
         if title in self.watchlist:
             await interaction.response.send_message(f"❌ '{title}' is already in the watchlist.", ephemeral=True)
             return
         self.watchlist[title] = {
+            "type": "movie" if is_movie else "tv",
             "current_season": 1,
             "current_episode": 1,
             "next_session": None
         }
         self.save_watchlist()
-        await interaction.response.send_message(f"✅ '{title}' has been added to the watchlist!")
+        await interaction.response.send_message(f"✅ '{title}' has been added to the watchlist as a {'movie' if is_movie else 'TV show'}!")
 
     # /removeshow
     @app_commands.command(name="removeshow", description="Remove a show from the watchlist.")
@@ -116,14 +118,24 @@ class WatchParty(commands.Cog):
         if title not in self.watchlist:
             await interaction.response.send_message(f"❌ '{title}' is not in the watchlist.", ephemeral=True)
             return
-        self.watchlist[title]["current_season"] = season
-        self.watchlist[title]["current_episode"] = episode
+        
+        show = self.watchlist[title]
+        if show.get("type", "tv") != "tv":
+            await interaction.response.send_message(f"🎬 '{title}' is a movie and does not have episodes.", ephemeral=True)
+            return
+        
+        show["current_season"] = season
+        show["current_episode"] = episode
         self.save_watchlist()
         await interaction.response.send_message(f"📺 '{title}' is now set to Season {season}, Episode {episode}.")
-    
+        
     @set_episode.autocomplete("title")
     async def set_episode_autocomplete(self, interaction: discord.Interaction, current: str):
-        return await self.watchlist_autocomplete(interaction, current)
+        return [
+            app_commands.Choice(name=title, value=title)
+            for title, data in self.watchlist.items()
+            if (data.get("type", "tv") == "tv") and current.lower() in title.lower()
+        ][:25]
 
     # /watched
     @app_commands.command(name="watched", description="Mark the next episode as watched.")
@@ -132,9 +144,23 @@ class WatchParty(commands.Cog):
         if title not in self.watchlist:
             await interaction.response.send_message(f"❌ '{title}' is not in the watchlist.", ephemeral=True)
             return
-        await interaction.response.send_message(f"✅ Marked episode {self.watchlist[title]['current_episode']} of **{title}** as watched.")
-        self.watchlist[title]["current_episode"] += 1
-        self.watchlist[title]["next_session"] = None  # clears schedule session if any exist
+        
+        entry = self.watchlist[title]
+        content_type = entry.get("type", "tv")
+
+
+        if content_type == "movie":
+            # Just clear the session and optionally mark it somehow
+            entry["next_session"] = None
+            entry["watched"] = True
+            await interaction.response.send_message(f"🎬 You've marked **{title}** as watched.")
+        else:
+            current_episode = entry.get("current_episode", 1)
+            entry["current_episode"] = current_episode + 1
+            entry["next_session"] = None
+            await interaction.response.send_message(
+                f"✅ Marked episode {current_episode} of **{title}** as watched. Now set to episode {entry['current_episode']}."
+            )
         self.save_watchlist()
 
     @watched.autocomplete("title")
@@ -149,28 +175,40 @@ class WatchParty(commands.Cog):
             return
         message = "🎬 **Watchlist:**\n"
         for title, data in self.watchlist.items():
-            ep = data.get("current_episode", "?")
-            message += f"- **{title}** (Ep {ep})\n"
+            if data.get("type") == "movie":
+                message += f"- 🎬 **{title}** (Movie)\n"
+            else:
+                ep = data.get("current_episode", "?")
+                season = data.get("current_season", "?")
+                message += f"- 📺 **{title}** (S{season} E{ep})\n"
         await interaction.response.send_message(message)
 
     # /status
-    @app_commands.command(name="status", description="Show the current status of a show.")
-    @app_commands.describe(title="Select a show")
+    @app_commands.command(name="status", description="Show the current status of a show or movie.")
+    @app_commands.describe(title="Select a show or movie")
     async def show_status(self, interaction: discord.Interaction, title: str):
         title = title.strip().title()
         if title not in self.watchlist:
             await interaction.response.send_message(f"❌ '{title}' is not in the watchlist.", ephemeral=True)
             return
+        
         show = self.watchlist[title]
-        ep = show.get("current_episode", 1)
-        season = show.get("current_season", 1)
+        content_type = show.get("type", "tv")  #Default to "tv" for backward compatibility
         session = show.get("next_session")
+
         if session:
             session_time = datetime.fromisoformat(session)
             formatted = session_time.strftime('%A, %d %B %Y at %I:%M %p')
         else:
             formatted = "Not scheduled"
-        await interaction.response.send_message(f"📺 **{title}**\nNext Episode: S{season} E{ep}\nNext Watch Session: {formatted}")
+
+        if content_type == "movie":
+            status_message = f"🎬 **{title}**\nType: Movie\nNext Watch Session: {formatted}"
+        else:
+            ep = show.get("current_episode", 1)
+            season = show.get("current_season", 1)
+            status_message = f"📺 **{title}**\nNext Episode: S{season} E{ep}\nNext Watch Session: {formatted}"
+        await interaction.response.send_message(status_message)
 
     @show_status.autocomplete("title")
     async def show_status_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -180,8 +218,8 @@ class WatchParty(commands.Cog):
 
     # /schedule
     @app_commands.choices(timezone=[app_commands.Choice(name="UK", value="UK"), app_commands.Choice(name="NL", value="NL")])
-    @app_commands.command(name="schedule", description="Schedule the next watch session for a show.")
-    @app_commands.describe(title="Select a show", time="Time for the session (e.g. 'Sunday 8pm')", timezone="Timezone (UK or NL)")
+    @app_commands.command(name="schedule", description="Schedule the next watch session for a show or movie.")
+    @app_commands.describe(title="Select a show or movie", time="Time for the session (e.g. 'Sunday 8pm')", timezone="Timezone (UK or NL)")
     async def schedule_session(self, interaction: discord.Interaction, title: str, time: str, timezone: str):
         title = title.strip().title()
         if title not in self.watchlist:
@@ -218,39 +256,57 @@ class WatchParty(commands.Cog):
             await interaction.response.send_message("❌ Could not find the voice channel.", ephemeral=True)
             return
 
-        # Get current episode and season
+        # Get information for show or movie
+        content_type = self.watchlist[title].get("type", "tv")
         season = self.watchlist[title].get("current_season", 1)
         ep = self.watchlist[title].get("current_episode", 1)
         runtime = 25  # default fallback
         poster_url = None
         image_bytes = None
 
-        # fetch TMDB info
-        tmdb_data = await self.tmdb_search_show(title)
-        if tmdb_data:
-            show_id = tmdb_data["id"]
+        # fetch TMDB info (TV or movie)
+        if content_type == "movie":
+            tmdb_url = f"https://api.themoviedb.org/3/search/movie"
+        else:
+            tmdb_url = f"https://api.themoviedb.org/3/search/tv"
 
-            if tmdb_data.get("poster_path"):
-                poster_url = f"https://image.tmdb.org/t/p/w780{tmdb_data['poster_path']}"
-                try:
-                    image_bytes = await self.get_image_bytes(poster_url)
-                except Exception as e:
-                    print(f"[Warning] Failed to fetch/verify poster image: {e}")
+        params = {"api_key": TMDB_API_KEY, "query": title}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(tmdb_url, params=params) as resp:
+                tmdb_data = await resp.json()
+                if tmdb_data["results"]:
+                    result = tmdb_data["results"][0]
+                    if result.get("poster_path"):
+                        poster_url = f"https://image.tmdb.org/t/p/w780{result['poster_path']}"
+                        try:
+                            image_bytes = await self.get_image_bytes(poster_url)
+                        except Exception as e:
+                            print(f"[Warning] Failed to fetch/verify poster image: {e}")
+                    overview = result.get("overview", "No description available.")
+                    runtime = result.get("runtime", runtime)  # Movie runtime if present
+                else:
+                    overview = "TMDB info not found."
+
+        
+        # If it's a TV show, fetch episode info
+        if content_type == "tv":
+            show_id = result["id"]
             episode_info = await self.tmdb_get_episode_info(show_id, season, ep)
-
             if episode_info:
                 runtime = episode_info.get("runtime", runtime)
-                overview = episode_info.get("overview", "No description available.")
-            else:
-                overview = "Episode info not found."
+                overview = episode_info.get("overview", overview)
+        
+        # Prepare event name
+        if content_type == "movie":
+            event_name = f"🎬 {title}"
         else:
-            overview = "TMDB info not found."
+            event_name = f"🎬 {title} - Season {season} Ep {ep}" 
 
         # Create scheduled event
         try:
             await interaction.guild.create_scheduled_event(
-                name=f"🎬 {title} - Season {season} Ep {ep}",
-                description=f"{overview}",
+                name=event_name,
+                description=overview,
                 start_time=parsed_time_utc,
                 end_time=parsed_time_utc + timedelta(minutes=runtime),
                 channel=voice_channel,
@@ -265,6 +321,7 @@ class WatchParty(commands.Cog):
 
         formatted_time = localized_time.strftime('%A, %d %B %Y at %I:%M %p')
         await interaction.response.send_message(f"📅 Next session for **{title}** scheduled on `{formatted_time}` ({timezone}) and a Discord event has been created!")
+    
     @schedule_session.autocomplete("title")
     async def schedule_title_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self.watchlist_autocomplete(interaction, current)
