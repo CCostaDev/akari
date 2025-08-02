@@ -261,50 +261,51 @@ class WatchParty(commands.Cog):
         season = self.watchlist[title].get("current_season", 1)
         ep = self.watchlist[title].get("current_episode", 1)
         runtime = 25  # default fallback
-        poster_url = None
+        overview = "no description available."
         image_bytes = None
 
-        # fetch TMDB info (TV or movie)
-        if content_type == "movie":
-            tmdb_url = f"https://api.themoviedb.org/3/search/movie"
-        else:
-            tmdb_url = f"https://api.themoviedb.org/3/search/tv"
-
+        # Determine search endpoint
+        search_url = f"https://api.themoviedb.org/3/search/{'movie' if content_type == 'movie' else 'tv'}"
         params = {"api_key": TMDB_API_KEY, "query": title}
+        
         async with aiohttp.ClientSession() as session:
-            async with session.get(tmdb_url, params=params) as resp:
+            async with session.get(search_url, params=params) as resp:
                 tmdb_data = await resp.json()
-                if tmdb_data["results"]:
-                    result = tmdb_data["results"][0]
-                    if result.get("poster_path"):
-                        poster_url = f"https://image.tmdb.org/t/p/w780{result['poster_path']}"
-                        try:
-                            image_bytes = await self.get_image_bytes(poster_url)
-                        except Exception as e:
-                            print(f"[Warning] Failed to fetch/verify poster image: {e}")
-                    overview = result.get("overview", "No description available.")
-                    runtime = result.get("runtime", runtime)  # Movie runtime if present
-                else:
-                    overview = "TMDB info not found."
+                if not tmdb_data.get("results"):
+                    await interaction.response.send_message("❌ Could not find anything on TMDB.", ephemeral=True)
+                    return
+                result = tmdb_data["results"][0]
+                tmdb_id = result["id"]
+
+                if result.get("poster_path"):
+                    poster_url = f"https://image.tmdb.org/t/p/w780{result['poster_path']}"
+                    try:
+                        image_bytes = await self.get_image_bytes(poster_url)
+                    except Exception as e:
+                        print(f"[Warning] Failed to fetch poster image: {e}")
+
+                overview = result.get("overview", overview)
+
+                # Additional fetch for movie runtime
+                if content_type == "movie":
+                    async with session.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}", params={"api_key": TMDB_API_KEY}) as movie_resp:
+                        movie_data = await movie_resp.json()
+                        runtime = movie_data.get("runtime", runtime)
 
         
-        # If it's a TV show, fetch episode info
+        # If TV, override with episode info
         if content_type == "tv":
-            show_id = result["id"]
-            episode_info = await self.tmdb_get_episode_info(show_id, season, ep)
+            episode_info = await self.tmdb_get_episode_info(tmdb_id, season, ep)
             if episode_info:
                 runtime = episode_info.get("runtime", runtime)
                 overview = episode_info.get("overview", overview)
         
-        # Prepare event name
-        if content_type == "movie":
-            event_name = f"🎬 {title}"
-        else:
-            event_name = f"🎬 {title} - Season {season} Ep {ep}" 
+        # Format event name
+        event_name = f"🎬 {title}" if content_type == "movie" else f"📺 {title} - Season {season} Ep {ep}"
 
         # Create scheduled event
         try:
-            await interaction.guild.create_scheduled_event(
+            event = await interaction.guild.create_scheduled_event(
                 name=event_name,
                 description=overview,
                 start_time=parsed_time_utc,
@@ -314,6 +315,8 @@ class WatchParty(commands.Cog):
                 privacy_level=discord.PrivacyLevel.guild_only,
                 image=image_bytes
             )
+            self.watchlist[title]["event_id"] = event.id  # 💾 Store event ID
+            self.save_watchlist()
         except Exception as e:
             print("Failed to create scheduled event", e)
             await interaction.response.send_message("❌ Failed to create the scheduled event.", ephemeral=True)
@@ -324,6 +327,95 @@ class WatchParty(commands.Cog):
     
     @schedule_session.autocomplete("title")
     async def schedule_title_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self.watchlist_autocomplete(interaction, current)
+    
+
+    # /editschedule
+    @app_commands.choices(timezone=[app_commands.Choice(name="UK", value="UK"),app_commands.Choice(name="NL", value="NL")])
+    @app_commands.command(name="editschedule", description="Edit the time of a previously scheduled watch session.")
+    @app_commands.describe(
+        title="Select a show or movie",
+        new_time="New time (e.g. 'Today 9pm')",
+        timezone="Timezone (UK or NL)"
+    )
+    async def edit_schedule(self, interaction: discord.Interaction, title: str, new_time: str, timezone: str):
+        title = title.strip().title()
+        if title not in self.watchlist:
+            await interaction.response.send_message(f"❌ '{title}' is not in the watchlist.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(thinking=True)
+
+        event_id = self.watchlist[title].get("event_id")
+        if not event_id:
+            await interaction.response.send_message("❌ No scheduled event found for this title.", ephemeral=True)
+            return
+
+        # Timezone handling
+        timezone_map = {
+            "UK": "Europe/London",
+            "NL": "Europe/Amsterdam"
+        }
+        tz_name = timezone_map.get(timezone.upper())
+        if not tz_name:
+            await interaction.response.send_message("❌ Invalid timezone. Choose either 'UK' or 'NL'.", ephemeral=True)
+            return
+
+        parsed_time = dateparser.parse(new_time)
+        if not parsed_time:
+            await interaction.response.send_message("❌ I couldn't understand that time. Try something like 'Sunday 8pm'.", ephemeral=True)
+            return
+
+        local_tz = pytz.timezone(tz_name)
+        localized_time = local_tz.localize(parsed_time)
+        new_start_utc = localized_time.astimezone(pytz.UTC)
+
+        # Estimate end time using runtime
+        content_type = self.watchlist[title].get("type", "tv")
+        season = self.watchlist[title].get("current_season", 1)
+        ep = self.watchlist[title].get("current_episode", 1)
+        runtime = 25  # default fallback
+
+        # Try refetching runtime
+        if content_type == "tv":
+            tmdb_data = await self.tmdb_search_show(title)
+            if tmdb_data:
+                show_id = tmdb_data["id"]
+                episode_info = await self.tmdb_get_episode_info(show_id, season, ep)
+                if episode_info:
+                    runtime = episode_info.get("runtime", runtime)
+        else:
+            # Fetch movie runtime
+            async with aiohttp.ClientSession() as session:
+                movie_url = f"https://api.themoviedb.org/3/search/movie"
+                params = {"api_key": TMDB_API_KEY, "query": title}
+                async with session.get(movie_url, params=params) as resp:
+                    tmdb_data = await resp.json()
+                    if tmdb_data["results"]:
+                        movie_id = tmdb_data["results"][0]["id"]
+                        async with session.get(f"https://api.themoviedb.org/3/movie/{movie_id}", params={"api_key": TMDB_API_KEY}) as m_resp:
+                            movie_data = await m_resp.json()
+                            runtime = movie_data.get("runtime", runtime)
+
+        # Attempt to edit the event
+        try:
+            event = await interaction.guild.fetch_scheduled_event(event_id)
+            await event.edit(
+                start_time=new_start_utc,
+                end_time=new_start_utc + timedelta(minutes=runtime)
+            )
+            self.watchlist[title]["next_session"] = parsed_time.isoformat()
+            self.save_watchlist()
+        except Exception as e:
+            print("❌ Failed to edit scheduled event:", e)
+            await interaction.response.send_message("❌ Failed to edit the scheduled event.", ephemeral=True)
+            return
+
+        formatted_time = localized_time.strftime('%A, %d %B %Y at %I:%M %p')
+        await interaction.followup.send(f"📝 Updated the session for **{title}** to `{formatted_time}` ({timezone}).")
+
+    @edit_schedule.autocomplete("title")
+    async def edit_schedule_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self.watchlist_autocomplete(interaction, current)
 
 async def setup(bot):
